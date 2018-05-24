@@ -130,6 +130,7 @@ int findDict(Inode *buf, Inode *inp, char *filename){
                 break;
             }
             strncpy(substr, filename + a + 1, b - a - 1);
+            substr[b - a - 1] = '\0';
             p = findDict(buf, inp, substr);
             if(p < 0){
                 return -1;
@@ -140,9 +141,11 @@ int findDict(Inode *buf, Inode *inp, char *filename){
             b--;
         }
         strncpy(substr, filename + a + 1, b - a);
+        substr[b - a] = '\0';
         p = findDict(buf, inp, substr);
         return p;
     }
+
     if(!(inp->flags & 1)){
         return -1;
     }
@@ -176,11 +179,13 @@ int newFile(Inode* file, int father, char* name, int isDict){
             return -1;
         }
         strncpy(q, name, i);
+        q[i] = '\0';
         if(findDict(&inode2, inp, q) < 0){
             return -1;
         }
         father = inode2.fa_inode;
         strncpy(q, name + i + 1, strlen(name) - i - 1);
+        q[strlen(name) - i - 1] = '\0';
         strcpy(name, q);
     }
     if(strlen(name) > 8){
@@ -361,6 +366,89 @@ int myremove(Inode *inp, char * filename){
     PUTBLK(ints, inode.blk_no);
     return 0;
 }
+int openf(int nowdes, int *des, int *p, char * text, char * filename){
+    Inode buf, inode;
+    char cbuf[BLOCKSIZE];
+    intToInode(&inode, nowdes);
+    if(findDict(&buf, &inode, filename) < 0){
+        return -1;
+    }
+    printf("%d\n",buf.descriptor);
+    if(buf.flags & 1){
+        return -1;
+    }
+    *des = buf.descriptor;
+    *p = 0;
+    memset(text, 0, sizeof(text));
+    for(int i = 0; i < 8; i++){
+        GETBLK(cbuf, buf.blk_no + i);
+        printf("%d:%s\n",i,cbuf);
+        strcat(text, cbuf);
+    }
+    return 0; 
+}
+int closef(int *des, int *p, char *text){
+    Inode buf, inode;
+    char cbuf[BLOCKSIZE];
+    intToInode(&buf, *des);
+    for(int i = 0; i < 8; i++){
+        strncpy(cbuf, text + BLOCKSIZE * i, BLOCKSIZE);
+        PUTBLK(cbuf, buf.blk_no + i);
+    }
+    if(*p > buf.size){
+        buf.size = *p;
+        writeInode(&buf);
+    }
+    *des = 0;
+    return 0;
+}
+int readf(int *des, int *p, char *text, char *arg){
+    int len = -1;
+    char buf[MAX_STRING_LENGTH];
+    Inode inode;
+    intToInode(&inode, *des);
+    sscanf(arg, "%d", &len);
+    if(len == -1){
+        return -1;
+    }
+    if((*p) + len > inode.size) return -1;
+    strncpy(buf, text + (*p), len);
+    buf[len] = '\0';
+    printf("%s\n",buf);
+    *p += len;
+    inode.access_time = time(NULL);
+    writeInode(&inode);
+    return 0;
+}
+int writef(int *des, int *p, char *text, char *arg){
+    int len = -1;
+    char buf[MAX_STRING_LENGTH];
+    Inode inode;
+    intToInode(&inode, *des);
+    len = strlen(arg);
+    if((*p) + len > 8 * BLOCKSIZE) return -1;
+    strncpy(text + (*p), arg, len);
+    *p += len;
+    inode.change_time = inode.access_time = time(NULL);
+    writeInode(&inode);
+    return 0;
+}
+int savef(int *des, int *p, char *text, char *arg){
+    int len = -1;
+    char buf[MAX_STRING_LENGTH];
+    Inode inode;
+    intToInode(&inode, *des);
+    FILE *fp = fopen(arg, "r");
+    if(fp == NULL) return -1;
+    fscanf(fp, "%s", buf);
+    len = strlen(buf);
+    if((*p) + len > 8 * BLOCKSIZE) return -1;
+    strncpy(text + (*p), buf, len);
+    *p += len;
+    inode.change_time = inode.access_time = time(NULL);
+    writeInode(&inode);
+    return 0;
+}
 int formatting(){
     char s[BLK_MAXLEN];
     memset(s, 0, sizeof(s));
@@ -417,58 +505,87 @@ void boot(){
     int nowDes = ROOTDES;
     int tmp = 0;
     char path[MAX_STRING_LENGTH] = "root@naide.me/";
+    int openfile = 0;
+    int openp = 0;
+    char text[MAX_STRING_LENGTH];
     while(1){
-        
-        printf("%d %s", nowDes,path);
-        gets(s);
-        sscanf(s,"%s %s",c,d);
-        if(!strcmp(c, "ls")){
-            showDict(inps, nowDes);
-        }
-        else if(!strcmp(c, "cd")){
-            tmp = gotoDict(&nowDes, d);
-            if(tmp == 0){
-                path[strlen(path) - 1] = '\0';
-                for(int i = strlen(path) -1; path[i] != '/'; i--){
-                    path[i] = '\0';
+        if(openfile == 0){
+            printf("%d %s", nowDes,path);
+            gets(s);
+            sscanf(s,"%s %s",c,d);
+            if(!strcmp(c, "ls")){
+                showDict(inps, nowDes);
+            }
+            else if(!strcmp(c, "cd")){
+                tmp = gotoDict(&nowDes, d);
+                if(tmp == 0){
+                    path[strlen(path) - 1] = '\0';
+                    for(int i = strlen(path) -1; path[i] != '/'; i--){
+                        path[i] = '\0';
+                    }
+                }
+                else if(tmp == 1){
+                    strcat(path, d);
+                }
+                else if(tmp == 2){
+                    strcpy(path, "root@naide.me");
+                    strcat(path, d);
                 }
             }
-            else if(tmp == 1){
-                strcat(path, d);
+            else if(!strcmp(c, "rm")){
+                printf("Do you really want to remove %s?(Y/N)",d);
+                gets(s);
+                if(s[0] != 'Y' && s[0] != 'y') {
+                    puts("remove cancelled..");
+                    continue;
+                }
+                intToInode(filep, nowDes);
+                if(myremove(filep, d) < 0){
+                puts("error:file not found");
+                }
             }
-            else if(tmp == 2){
-                strcpy(path, "root@naide.me");
-                strcat(path, d);
+            else if(!strcmp(c, "new")){
+                newFile(filep, nowDes, d, 0);
+            }
+            else if(!strcmp(c, "newdict")){
+                newFile(filep, nowDes, d, 1);
+            }
+            else if(!strcmp(c, "format")){
+                formatting();
+            }
+            else if(!strcmp(c, "shutdown")){
+                printf("it's goint to shutdown..\n");
+                return;
+            }
+            else if(!strcmp(c, "open")){
+                openf(nowDes, &openfile, &openp, text, d);
+            }
+            else {
+                puts("command not found!");
             }
         }
-        else if(!strcmp(c, "rm")){
-            printf("Do you really want to remove %s?(Y/N)",d);
+        else{
+            intToInode(&file, openfile);
+            printf("now opening: %s, >",file.name);
             gets(s);
-            if(s[0] != 'Y' && s[0] != 'y') {
-                puts("remove cancelled..");
-                continue;
+            sscanf(s,"%s %s",c,d);
+            if(!strcmp(c, "close")){
+                closef(&openfile, &openp, text);
             }
-            intToInode(filep, nowDes);
-            if(myremove(filep, d) < 0){
-               puts("error:file not found");
+            else if(!strcmp(c, "read")){
+                readf(&openfile, &openp, text, d);
+            }
+            else if(!strcmp(c, "write")){
+                writef(&openfile, &openp, text, d);
+            }
+            else if(!strcmp(c, "save")){
+                savef(&openfile, &openp, text, d);
+            }
+            else {
+                puts("command not found!");
             }
         }
-        else if(!strcmp(c, "new")){
-            newFile(filep, nowDes, d, 0);
-        }
-        else if(!strcmp(c, "newdict")){
-            newFile(filep, nowDes, d, 1);
-        }
-        else if(!strcmp(c, "format")){
-            formatting();
-        }
-        else if(!strcmp(c, "shutdown")){
-            printf("it's goint to shutdown..\n");
-            return;
-        }
-        else {
-            puts("command not found!");
-        }
+            
     }
 }
 int main(){
